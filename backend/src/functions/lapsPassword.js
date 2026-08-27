@@ -148,7 +148,7 @@ app.http('laps-password', {
       context.log('Graph API error during ownership check:', err.message);
       trackPasswordAccess({
         oid: caller.oid, upn: caller.upn, deviceId,
-        justification: trimmedJustification, success: false, failReason: 'OWNERSHIP_CHECK_ERROR',
+        success: false, failReason: 'OWNERSHIP_CHECK_ERROR',
       });
       return {
         status:   500,
@@ -160,7 +160,7 @@ app.http('laps-password', {
       context.log(`Device ${deviceId} not found in registered devices of ${caller.upn}`);
       trackPasswordAccess({
         oid: caller.oid, upn: caller.upn, deviceId,
-        justification: trimmedJustification, success: false, failReason: 'DEVICE_NOT_OWNED',
+        success: false, failReason: 'DEVICE_NOT_OWNED',
       });
       await auditDenial(context, {
         oid: caller.oid, upn: caller.upn, deviceId, deviceName: '',
@@ -183,7 +183,7 @@ app.http('laps-password', {
       if (err.code === 'NOT_FOUND') {
         trackPasswordAccess({
           oid: caller.oid, upn: caller.upn, deviceId, deviceName: device.name,
-          justification: trimmedJustification, success: false, failReason: 'NO_LAPS_CREDENTIAL',
+          success: false, failReason: 'NO_LAPS_CREDENTIAL',
         });
         await auditDenial(context, {
           oid: caller.oid, upn: caller.upn, deviceId, deviceName: device.name,
@@ -199,7 +199,7 @@ app.http('laps-password', {
         context.log('SECURITY: LAPS lookup returned a different device than authorized:', err.message);
         trackPasswordAccess({
           oid: caller.oid, upn: caller.upn, deviceId, deviceName: device.name,
-          justification: trimmedJustification, success: false, failReason: 'DEVICE_MISMATCH',
+          success: false, failReason: 'DEVICE_MISMATCH',
         });
         await auditDenial(context, {
           oid: caller.oid, upn: caller.upn, deviceId, deviceName: device.name,
@@ -214,7 +214,7 @@ app.http('laps-password', {
       context.log('Graph API error retrieving LAPS password:', err.message);
       trackPasswordAccess({
         oid: caller.oid, upn: caller.upn, deviceId, deviceName: device.name,
-        justification: trimmedJustification, success: false, failReason: 'LAPS_API_ERROR',
+        success: false, failReason: 'LAPS_API_ERROR',
       });
       return {
         status:   500,
@@ -238,7 +238,7 @@ app.http('laps-password', {
       context.log('AUDIT FAILURE – withholding password:', err.message);
       trackPasswordAccess({
         oid: caller.oid, upn: caller.upn, deviceId, deviceName: lapsResult.deviceName,
-        justification: trimmedJustification, success: false, failReason: 'AUDIT_WRITE_FAILED',
+        success: false, failReason: 'AUDIT_WRITE_FAILED',
       });
       return {
         status:   503,
@@ -252,7 +252,6 @@ app.http('laps-password', {
     trackPasswordAccess({
       oid: caller.oid, upn: caller.upn, deviceId,
       deviceName:    lapsResult.deviceName,
-      justification: trimmedJustification,
       success:       true,
     });
 
