@@ -7,8 +7,11 @@
  *
  * Required application permissions on the Managed Identity:
  *   Device.Read.All                  – enumerate user's registered devices
- *   DeviceLocalCredential.Read.All   – read LAPS passwords (beta endpoint)
- *   Directory.Read.All               – device lookup / ownership verification
+ *   DeviceLocalCredential.Read.All   – read LAPS passwords
+ *
+ * Directory.Read.All is deliberately NOT requested: every call this module
+ * makes is covered by the two roles above, and Directory.Read.All would grant
+ * tenant-wide read access to the whole directory.
  *
  * See docs/deployment.md (Step 3) for the az CLI commands to assign these.
  */
@@ -45,7 +48,8 @@ function getGraphClient() {
 
 /**
  * @typedef {object} DeviceInfo
- * @property {string}  id              - Entra Device Object ID (used for LAPS lookup)
+ * @property {string}  id              - Entra Device *Object* ID (used to match the client's request)
+ * @property {string}  deviceId        - Entra *Device* ID (GUID) – the key for the LAPS lookup
  * @property {string}  name            - Device display name
  * @property {string}  operatingSystem - e.g. "Windows"
  * @property {boolean} isManaged       - Whether the device is Intune-managed
@@ -66,7 +70,7 @@ async function getRegisteredDevices(userId) {
   const client = getGraphClient();
   const result = await client
     .api(`/users/${userId}/registeredDevices`)
-    .select('id,displayName,operatingSystem,isManaged,approximateLastSignInDateTime')
+    .select('id,deviceId,displayName,operatingSystem,isManaged,approximateLastSignInDateTime')
     .get();
 
   const SUPPORTED_OS = new Set(['windows', 'macos']);
@@ -75,6 +79,7 @@ async function getRegisteredDevices(userId) {
     .filter(d => SUPPORTED_OS.has((d.operatingSystem ?? '').toLowerCase()))
     .map(d => ({
       id:              d.id,
+      deviceId:        d.deviceId ?? null,
       name:            d.displayName ?? '',
       operatingSystem: d.operatingSystem ?? '',
       isManaged:       d.isManaged ?? false,
@@ -87,10 +92,10 @@ async function getRegisteredDevices(userId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Verify that a device (by Entra Device ID) is in the user's registered devices.
- * Returns the matching device object if owned, or null if not.
+ * Verify that a device (by Entra Device Object ID) is in the user's registered
+ * devices. Returns the matching device object if owned, or null if not.
  *
- * @param {string} deviceId  Entra Device Object ID
+ * @param {string} deviceId  Entra Device *Object* ID as supplied by the client
  * @param {string} userId    Entra Object ID of the authenticated user
  * @returns {Promise<DeviceInfo|null>}
  */
@@ -116,59 +121,45 @@ async function findOwnedDevice(deviceId, userId) {
 
 /**
  * Retrieve the LAPS credential for the given device.
- * Uses a two-step approach:
- *   1. GET /v1.0/directory/deviceLocalCredentials?$filter=deviceName eq '...'&$select=id,deviceName
- *      Server-side filter to find the deviceLocalCredentialInfo id for the device.
- *   2. GET /v1.0/directory/deviceLocalCredentials/{credInfoId}?$select=credentials,deviceName
- *      Fetch the actual credential using the credentialInfo id.
  *
- * The deviceLocalCredentialInfo id is NOT the Entra Device Object ID — it is a
- * separate identifier. Using $filter avoids the old pagination bug where listing
- * all credentials without pagination missed devices beyond the first page.
+ * The lookup key is the Entra **deviceId** – the same value the ownership check
+ * is performed against. deviceLocalCredentialInfo.id *is* the device's deviceId,
+ * so the credential can be fetched directly:
+ *
+ *   GET /v1.0/directory/deviceLocalCredentials/{deviceId}?$select=credentials,deviceName,refreshDateTime
+ *
+ * Do NOT look this up by device display name. Display names are not unique in
+ * Entra ID (they are just the hostname), so a name-based lookup lets a user who
+ * owns a device called "X" receive the LAPS credential of somebody else's
+ * device also called "X" – the authorization decision and the data fetch would
+ * be keyed on different identifiers.
+ *
+ * As belt and braces, the display name returned by Graph is compared with the
+ * name of the device the caller was authorized for.
  *
  * We use native fetch (Node 18+) instead of the Graph SDK client to avoid
  * the SDK's version-override mechanism conflicting with a custom baseUrl.
  *
  * Requires: DeviceLocalCredential.Read.All
  *
- * @param {string} deviceName  Display name of the device (from registeredDevices)
+ * @param {string} deviceId            Entra deviceId (GUID) of the owned device
+ * @param {string} [expectedDeviceName] Display name the caller was authorized for
  * @returns {Promise<LapsCredential>}
  * @throws {Error} err.code === 'NOT_FOUND' if no credential is stored
+ * @throws {Error} err.code === 'DEVICE_MISMATCH' if Graph returns a different device
  */
-async function getLapsPassword(deviceName) {
+async function getLapsPassword(deviceId, expectedDeviceName) {
+  if (!deviceId) {
+    const err = new Error('No Entra deviceId available for this device.');
+    err.code = 'NOT_FOUND';
+    throw err;
+  }
+
   const tokenResponse = await getCredential().getToken(`${GRAPH_ENDPOINT}/.default`);
   const authHeader = { Authorization: `Bearer ${tokenResponse.token}` };
 
-  // ── Step 1: find the deviceLocalCredentialInfo id by server-side filter ────
-  const escapedName = deviceName.replace(/'/g, "''");
-  const listUrl = `${GRAPH_ENDPOINT}/v1.0/directory/deviceLocalCredentials?$filter=deviceName eq '${encodeURIComponent(escapedName)}'&$select=id,deviceName,lastBackupDateTime`;
-  const listRes = await fetch(listUrl, { headers: authHeader });
-  let listResult;
-  try   { listResult = await listRes.json(); }
-  catch { listResult = {}; }
-
-  if (!listRes.ok) {
-    const msg = listResult?.error?.message ?? `HTTP ${listRes.status}`;
-    throw new Error(`Failed to query deviceLocalCredentials: ${msg}`);
-  }
-
-  // Pick the credential with the most recent backup (handles multiple entries
-  // for the same device name, e.g. after re-enrollment or policy changes)
-  const credInfo = (listResult?.value ?? [])
-    .sort((a, b) => (b.lastBackupDateTime ?? '').localeCompare(a.lastBackupDateTime ?? ''))
-    [0];
-
-  if (!credInfo) {
-    const notFound = new Error(`No LAPS credential found for device "${deviceName}".`);
-    notFound.code = 'NOT_FOUND';
-    throw notFound;
-  }
-
-  // ── Step 2: fetch the full credential using the deviceLocalCredentialInfo id ─
-  // Note: refreshDateTime lives on the top-level deviceLocalCredentialInfo object
-  // (it indicates the next scheduled refresh/rotation), while backupDateTime lives
-  // per-credential inside the credentials[] array (last backup of that credential).
-  const url = `${GRAPH_ENDPOINT}/v1.0/directory/deviceLocalCredentials/${credInfo.id}?$select=credentials,deviceName,refreshDateTime`;
+  const url = `${GRAPH_ENDPOINT}/v1.0/directory/deviceLocalCredentials/${encodeURIComponent(deviceId)}`
+            + '?$select=credentials,deviceName,refreshDateTime';
   const res = await fetch(url, { headers: authHeader });
 
   let result;
@@ -191,6 +182,16 @@ async function getLapsPassword(deviceName) {
     throw err;
   }
 
+  // Graph should never return a different device for a deviceId lookup, but the
+  // whole security model rests on this – verify rather than assume.
+  if (expectedDeviceName && result.deviceName
+      && result.deviceName.toLowerCase() !== expectedDeviceName.toLowerCase()) {
+    const mismatch = new Error(
+      `LAPS lookup returned "${result.deviceName}" but the caller was authorized for "${expectedDeviceName}".`);
+    mismatch.code = 'DEVICE_MISMATCH';
+    throw mismatch;
+  }
+
   const credential = result?.credentials?.[0];
   if (!credential) {
     const notFound = new Error('No LAPS credential found for this device.');
@@ -204,7 +205,7 @@ async function getLapsPassword(deviceName) {
     : (credential.password ?? '');
 
   return {
-    deviceName:      result.deviceName ?? '',
+    deviceName:      result.deviceName ?? expectedDeviceName ?? '',
     accountName:     credential.accountName ?? '',
     password,
     passwordCreated: credential.backupDateTime ?? null,

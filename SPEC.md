@@ -95,6 +95,11 @@ The LAPS Self-Service Portal allows end users to retrieve the Windows LAPS (Loca
 - **Easy Auth**: Azure Function App is configured with Entra ID authentication
   - All unauthenticated requests are rejected with HTTP 401
   - User information is forwarded as HTTP headers (`X-MS-CLIENT-PRINCIPAL`)
+  - The backend does **not** rely on this alone: `lib/auth.js` re-verifies the forwarded
+    Bearer token against Entra ID's JWKS (RS256, audience `api://<clientId>`, issuer, tenant
+    and the `access_as_user` scope). The unsigned principal header is only trusted when no
+    Bearer token is present *and* `EASY_AUTH_ENABLED=true` declares that the platform strips
+    client-supplied copies of it.
 - **Managed Identity**: System-assigned Managed Identity of the Function App
   - Communicates with Microsoft Graph without stored credentials
   - Token acquisition via `@azure/identity` (ManagedIdentityCredential)
@@ -105,7 +110,6 @@ The LAPS Self-Service Portal allows end users to retrieve the Windows LAPS (Loca
 |------------|---------|
 | `Device.Read.All` | Read device metadata and verify ownership (`/users/{oid}/registeredDevices`) |
 | `DeviceLocalCredential.Read.All` | Retrieve LAPS passwords |
-| `Directory.Read.All` | Navigate the registered devices relationship |
 
 > **Note**: These Application Permissions must be assigned to the Managed Identity via the
 > Azure CLI (`az rest`). The deployment scripts handle this automatically (Step 3 of the
@@ -119,16 +123,20 @@ The restriction that users may only retrieve the LAPS password for their own dev
 
 **Flow:**
 
-1. Backend extracts the Object ID (OID) from the validated JWT (Easy Auth header `X-MS-CLIENT-PRINCIPAL`)
+1. Backend extracts the Object ID (OID) from the cryptographically verified access token
 2. Backend queries all Entra ID registered devices for that user via Microsoft Graph:
    ```
    GET https://graph.microsoft.com/v1.0/users/{oid}/registeredDevices
        ?$filter=operatingSystem eq 'Windows' or operatingSystem eq 'macOS'
        &$select=id,displayName,operatingSystem,isManaged,approximateLastSignInDateTime
    ```
-3. For `POST /api/laps-password`: backend checks whether the requested `deviceId` is in the user's device list
+3. For `POST /api/laps-password`: backend checks whether the requested device object ID is in the user's device list
 4. If not → HTTP 403 Forbidden
-5. If yes → LAPS password is retrieved
+5. If yes → the LAPS credential is fetched with that device's Entra `deviceId`
+   (`GET /v1.0/directory/deviceLocalCredentials/{deviceId}`), i.e. the same identifier the
+   authorization decision was made on. Display names are **not** unique in Entra ID, so a
+   name-based lookup would let a colliding device name resolve to another user's credential.
+   The `deviceName` returned by Graph is compared against the authorized device as a final check.
 
 The frontend device list is a UX convenience only. The actual authorization check happens in the backend on every request.
 
@@ -139,9 +147,11 @@ The frontend device list is a UX convenience only. The actual authorization chec
 Every password retrieval requires a justification:
 
 - **Required field**: Justification must be provided (minimum 10 characters)
-- **Maximum length**: 500 characters
+- **Maximum length**: 500 characters, enforced by the backend (`JUSTIFICATION_MAX_LENGTH`).
+  Without a server-side cap an oversized justification exceeds the Azure Table entity limit,
+  the audit write fails, and the password would still be released.
 - **Stored in audit log**: Yes, as free text
-- **Validation**: Frontend (UX) + backend (authoritative)
+- **Validation**: Frontend (UX) + backend (authoritative, both bounds)
 
 ---
 

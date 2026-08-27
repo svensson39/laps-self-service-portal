@@ -103,8 +103,22 @@ module functionApp 'modules/functionapp.bicep' = {
     appInsightsConnectionString: monitoring.outputs.connectionString
     tenantId: tenantId
     authClientId: authClientId
-    allowedOrigins: [staticWebApp.outputs.defaultHostname]
+    allowedOrigins: union([staticWebApp.outputs.defaultHostname], empty(customDomain) ? [] : [format('https://{0}', customDomain)])
     tags: tags
+  }
+}
+
+// ── Module: Data-plane RBAC for the Function App Managed Identity ─────────────
+// Grants table write (audit log) and blob read (run-from-package) so neither
+// path needs a storage account key. Requires the deploying principal to hold
+// Owner or User Access Administrator on the resource group.
+
+module roleAssignments 'modules/roleAssignments.bicep' = {
+  name: 'roleAssignments'
+  scope: rg
+  params: {
+    storageAccountName: storage.outputs.storageAccountName
+    principalId: functionApp.outputs.principalId
   }
 }
 

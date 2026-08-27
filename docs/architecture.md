@@ -44,7 +44,7 @@ Browser                    Entra ID                 Function App          Micros
   │   { deviceId, justification }                         │                      │
   │                            │                          │                      │
   │                            │                          │── verify ownership ──▶│
-  │                            │                          │── GET /beta/deviceLocalCredentials/{id} ─▶│
+  │                            │                          │── GET /v1.0/directory/deviceLocalCredentials/{deviceId} ─▶│
   │                            │                          │◀── password ──────────────────────────────│
   │                            │                          │                      │
   │                            │                          │── write audit log ──▶ Table Storage
@@ -59,16 +59,27 @@ Browser                    Entra ID                 Function App          Micros
 ### Token Validation
 
 The Function App's built-in authentication (Easy Auth) validates the Bearer token on every
-request before the function code runs. Unauthenticated requests receive HTTP 401. No manual
-JWT validation code is required.
+request before the function code runs. Unauthenticated requests receive HTTP 401.
+
+Easy Auth is defence in depth, not the only check. `lib/auth.js` independently verifies the
+forwarded Bearer token against Entra ID's JWKS (signature, RS256, audience `api://<clientId>`,
+issuer, tenant and the `access_as_user` scope). The unsigned `X-MS-CLIENT-PRINCIPAL` header is
+only trusted when no Bearer token is present *and* the app setting `EASY_AUTH_ENABLED` is
+`true` - that flag is the deployment's explicit statement that the platform strips any
+client-supplied copy of the header. Without it, a forged header is rejected rather than
+believed.
 
 ### "Only My Device" Rule
 
 Device ownership is enforced **in the backend** on every request, not just in the UI:
 
-1. The backend reads the user's Object ID (OID) from the Easy Auth header (`X-MS-CLIENT-PRINCIPAL`)
+1. The backend reads the user's Object ID (OID) from the verified access token
 2. It queries Graph for all registered devices of that user (`GET /users/{oid}/registeredDevices`)
-3. The requested `deviceId` must appear in that list — otherwise HTTP 403 is returned
+3. The requested device object ID must appear in that list - otherwise HTTP 403 is returned
+4. The LAPS credential is then fetched using that same device's Entra `deviceId`. The
+   authorization decision and the data fetch are keyed on the same identifier; looking the
+   credential up by display name would let a device with a colliding name resolve to somebody
+   else's credential, since display names are not unique in Entra ID.
 
 The frontend device list is a UX convenience only; it does not constitute an authorization boundary.
 
@@ -94,7 +105,6 @@ Required application permissions on the Managed Identity:
 |-----------|---------|
 | `Device.Read.All` | Read device properties |
 | `DeviceLocalCredential.Read.All` | Read LAPS passwords |
-| `Directory.Read.All` | Required to navigate `/users/{id}/registeredDevices` |
 
 ### Audit Trail
 
@@ -131,9 +141,9 @@ Subscription
     │
     ├── Function App: <projectName>-func
     │   ├── System-assigned Managed Identity
-    │   └── Graph permissions: Device.Read.All, DeviceLocalCredential.Read.All, Directory.Read.All
+    │   └── Graph permissions: Device.Read.All, DeviceLocalCredential.Read.All
     │   ├── Easy Auth → Entra ID (validates JWT before code runs)
-    │   ├── WEBSITE_RUN_FROM_PACKAGE → Blob Storage SAS URL
+    │   ├── WEBSITE_RUN_FROM_PACKAGE → Blob Storage URL (read via Managed Identity)
     │   └── App Settings (TENANT_ID, AUTH_CLIENT_ID, AUDIT_*, GRAPH_API_ENDPOINT, …)
     │
     ├── Static Web App: <projectName>-swa  (Standard tier, westeurope by default)
@@ -156,25 +166,32 @@ Subscription
 POST /api/laps-password
 { "deviceId": "...", "justification": "..." }
 
-Step 1 – Easy Auth validates Bearer token (audience: api://<clientId>)
-         → extracts X-MS-CLIENT-PRINCIPAL header (base64-encoded claims JSON)
+Step 1 - Easy Auth validates the Bearer token (audience: api://<clientId>)
+         and forwards it, plus X-MS-CLIENT-PRINCIPAL, to the function
 
-Step 2 – getCallerIdentity() reads OID and UPN from the header
+Step 2 - getCallerIdentity() re-verifies the Bearer token against JWKS
+         (RS256, aud, iss, tid, scp) and returns OID + UPN. If a principal
+         header is also present its OID must match the verified token.
 
-Step 3 – Input validation
-         → deviceId present?
-         → justification >= JUSTIFICATION_MIN_LENGTH characters?
+Step 3 - Input validation
+         -> deviceId present?
+         -> JUSTIFICATION_MIN_LENGTH <= justification <= JUSTIFICATION_MAX_LENGTH?
 
 Step 4 – findOwnedDevice(deviceId, oid)
          → Graph: GET /v1.0/users/{oid}/registeredDevices
          → Is deviceId in the result set?
          → No → write DENIED audit log → return HTTP 403
 
-Step 5 – getLapsPassword(deviceId)
-         → Graph: GET /beta/deviceLocalCredentials/{deviceId}?$select=credentials,deviceName
-         → No credential → write DENIED audit log → return HTTP 404
+Step 5 - getLapsPassword(device.deviceId, device.name)
+         -> Graph: GET /v1.0/directory/deviceLocalCredentials/{deviceId}
+                       ?$select=credentials,deviceName,refreshDateTime
+         -> Returned deviceName must match the authorized device -> else HTTP 403
+         -> No credential -> write DENIED audit log -> return HTTP 404
 
-Step 6 – writeAuditLog(action: 'SUCCESS')
+Step 6 - writeAuditLog(action: 'SUCCESS')
+         -> Fail-closed: if the record cannot be persisted the password is
+            withheld and HTTP 503 is returned. Otherwise a caller could
+            suppress their own audit trail and still get the credential.
 
 Step 7 – Return { deviceName, password, expiresAt, auditId }
 ```
@@ -187,8 +204,11 @@ The Function App is deployed using the `WEBSITE_RUN_FROM_PACKAGE` pattern:
 
 1. Backend source is zipped locally
 2. Zip is uploaded to the project's Storage Account (`func-deployments` container)
-3. A SAS URL (2-year expiry) is generated for the blob
-4. The SAS URL is written to the `WEBSITE_RUN_FROM_PACKAGE` app setting via ARM REST API
+3. The blob URL (no SAS) is written to `WEBSITE_RUN_FROM_PACKAGE` via the ARM REST API,
+   together with `WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned`
+4. The platform reads the package with the Function App's Managed Identity, which holds
+   *Storage Blob Data Reader* on the account. No SAS token and no account key ever land in
+   app settings, and access is revoked by removing the role assignment.
 5. Azure Functions runtime mounts the zip read-only and runs from it
 
 This avoids the Kudu SCM endpoint (which is unreliable for Linux Dedicated plans) and

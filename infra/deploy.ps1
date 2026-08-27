@@ -407,9 +407,11 @@ function Set-GraphRole([string]$RoleName) {
     }
 }
 
+# Least privilege: these two roles cover every Graph call the backend makes.
+# Directory.Read.All is deliberately not assigned - it would grant tenant-wide
+# read access to the entire directory for no functional gain.
 Set-GraphRole 'Device.Read.All'
 Set-GraphRole 'DeviceLocalCredential.Read.All'
-Set-GraphRole 'Directory.Read.All'
 
 # ── Step 5: Backend deployment ────────────────────────────────────────────────
 
@@ -446,7 +448,6 @@ if (-not $SkipBackend) {
 
     $containerName = 'func-deployments'
     $blobName      = "$FuncAppName-$(Get-Date -Format 'yyyyMMddHHmmss').zip"
-    $expiry        = (Get-Date).AddYears(2).ToString('yyyy-MM-ddTHH:mm:ssZ')
 
     az storage container create `
         --name $containerName `
@@ -466,19 +467,15 @@ if (-not $SkipBackend) {
     Remove-Item $zipFile -ErrorAction SilentlyContinue
     Write-Ok 'Package uploaded to blob storage'
 
-    $sasUrl = (Invoke-Az storage blob generate-sas `
-        --account-name $StorageAccountName `
-        --account-key $StorageKey `
-        --container-name $containerName `
-        --name $blobName `
-        --permissions r `
-        --expiry $expiry `
-        --full-uri `
-        -o tsv)
+    # The Function App reads the package with its Managed Identity (Storage Blob
+    # Data Reader, granted by infra/modules/roleAssignments.bicep). The previous
+    # approach put a two-year account-key SAS in app settings, which could only
+    # be revoked by rotating the storage account key.
+    $blobUrl = "https://$StorageAccountName.blob.core.windows.net/$containerName/$blobName"
 
-    Write-Host '  Configuring Function App (WEBSITE_RUN_FROM_PACKAGE)…'
-    # Use Invoke-RestMethod instead of az CLI so the SAS URL (which contains '&')
-    # is passed as a PowerShell string and never interpreted by cmd.exe.
+    Write-Host '  Configuring Function App (WEBSITE_RUN_FROM_PACKAGE via Managed Identity)…'
+    # Use Invoke-RestMethod instead of az CLI so app settings are merged rather
+    # than replaced, and nothing sensitive is interpreted by cmd.exe.
     $armBase    = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Web/sites/$FuncAppName"
     $apiVer     = '2022-03-01'
     $armToken   = (az account get-access-token --resource https://management.azure.com --query accessToken -o tsv)
@@ -494,9 +491,10 @@ if (-not $SkipBackend) {
     if ($currentProps) {
         $currentProps.PSObject.Properties | ForEach-Object { $settingsHash[$_.Name] = $_.Value }
     }
-    $settingsHash['WEBSITE_RUN_FROM_PACKAGE'] = $sasUrl
+    $settingsHash['WEBSITE_RUN_FROM_PACKAGE'] = $blobUrl
+    $settingsHash['WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID'] = 'SystemAssigned'
 
-    # PUT – the SAS URL is in the request body, never on the command line
+    # PUT – settings travel in the request body, never on the command line
     Invoke-RestMethod -Method PUT `
         -Uri "${armBase}/config/appsettings?api-version=$apiVer" `
         -Headers $armHeaders `

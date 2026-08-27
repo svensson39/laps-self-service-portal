@@ -2,7 +2,7 @@
  * GET /api/my-devices
  *
  * Returns all Entra ID registered devices for the authenticated user.
- * Only device name and ID are returned – no sensitive information.
+ * Only device name and object ID are returned – no sensitive information.
  *
  * Response 200:
  *   {
@@ -13,6 +13,7 @@
  *   }
  *
  * Response 401: Missing or invalid token
+ * Response 403: Insufficient scope
  * Response 500: Graph API error
  */
 
@@ -26,7 +27,7 @@ const { trackDeviceListAccess }        = require('../lib/telemetry');
 app.http('my-devices', {
   methods:    ['GET'],
   route:      'my-devices',
-  authLevel:  'anonymous',  // Token validation handled by lib/auth.js (Easy Auth or JWKS)
+  authLevel:  'anonymous',  // Token validation handled by lib/auth.js (verified JWT or declared Easy Auth)
 
   handler: async (request, context) => {
     context.log('GET /api/my-devices');
@@ -36,10 +37,15 @@ app.http('my-devices', {
     try {
       caller = await getCallerIdentity(request);
     } catch (err) {
+      // Diagnostics stay server-side; the client gets a generic message
+      context.log('Authentication rejected:', err.detail ?? err.message);
       const status = err instanceof AuthError ? err.status : 401;
       return {
         status,
-        jsonBody: { error: 'UNAUTHORIZED', message: err.message ?? 'Authentication required.' },
+        jsonBody: {
+          error:   status === 403 ? 'FORBIDDEN' : 'UNAUTHORIZED',
+          message: err instanceof AuthError ? err.message : 'Authentication required.',
+        },
       };
     }
 
@@ -50,7 +56,7 @@ app.http('my-devices', {
     try {
       devices = await getRegisteredDevices(caller.oid);
     } catch (err) {
-      context.log('Graph API error in getRegisteredDevices:', err.message, 'statusCode:', err.statusCode, 'code:', err.code, 'body:', JSON.stringify(err.body ?? err.response?.body));
+      context.log('Graph API error in getRegisteredDevices:', err.message, 'statusCode:', err.statusCode, 'code:', err.code);
       return {
         status:   500,
         jsonBody: { error: 'GRAPH_ERROR', message: 'Failed to retrieve device list.' },
@@ -62,9 +68,14 @@ app.http('my-devices', {
     // ── 3. Track in Application Insights ──────────────────────────────────
     trackDeviceListAccess({ oid: caller.oid, upn: caller.upn, deviceCount: devices.length });
 
+    // Expose only what the UI needs. The Entra deviceId stays server-side so a
+    // client can never supply it as a lookup key.
     return {
       status:   200,
-      jsonBody: { devices },
+      jsonBody: {
+        devices: devices.map(({ id, name, operatingSystem, isManaged, lastSignIn }) =>
+          ({ id, name, operatingSystem, isManaged, lastSignIn })),
+      },
     };
   },
 });
