@@ -12,7 +12,6 @@
  *   userPrincipalName UPN of the requesting user
  *   deviceId          Entra Device Object ID
  *   deviceName        Device display name (empty string on failure)
- *   justification     User-provided reason for the access
  *   success           'true' | 'false'
  *   failReason        Why the access failed (empty string on success)
  *   timestamp         ISO 8601 UTC
@@ -75,11 +74,10 @@ function getClient() {
  * @param {string}  params.upn           User Principal Name
  * @param {string}  params.deviceId      Entra Device Object ID
  * @param {string}  [params.deviceName]  Device display name
- * @param {string}  params.justification User-provided reason
  * @param {boolean} params.success       Whether the password was returned
  * @param {string}  [params.failReason]  Failure reason code
  */
-function trackPasswordAccess({ oid, upn, deviceId, deviceName, justification, success, failReason }) {
+function trackPasswordAccess({ oid, upn, deviceId, deviceName, success, failReason }) {
   const client = getClient();
   if (!client) return;
 
@@ -90,7 +88,6 @@ function trackPasswordAccess({ oid, upn, deviceId, deviceName, justification, su
       userPrincipalName: upn,
       deviceId,
       deviceName:        deviceName ?? '',
-      justification,
       success:           String(success),
       failReason:        failReason ?? '',
       timestamp:         new Date().toISOString(),

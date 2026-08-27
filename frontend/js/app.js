@@ -418,6 +418,11 @@
   // Logout
   document.getElementById('btn-logout').addEventListener('click', logout);
 
+  // Theme toggles
+  document.querySelectorAll('.theme-toggle').forEach(btn => {
+    btn.addEventListener('click', toggleTheme);
+  });
+
   // Error retry
   // (onclick set dynamically in showGlobalError)
 
