@@ -22,14 +22,17 @@ param tenantId string
 @description('Client ID of the App Registration (for Easy Auth audience validation)')
 param authClientId string
 
-@description('Allowed CORS origins – typically the Static Web App URL')
+@description('Allowed CORS origins – the Static Web App URL and any custom domain')
 param allowedOrigins array
 
 @description('Resource tags')
 param tags object
 
 // ── Existing Storage Account reference ───────────────────────────────────────
-// Connection string is constructed here to avoid exposing secrets in module outputs.
+// AzureWebJobsStorage still requires a shared-key connection string (Functions
+// runtime limitation). The audit log does NOT – it authenticates with the
+// Managed Identity so the app cannot be handed a key that also lets it rewrite
+// its own audit trail. See modules/roleAssignments.bicep.
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-04-01' existing = {
   name: storageAccountName
@@ -45,7 +48,8 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   tags: tags
   kind: 'functionapp,linux'
   identity: {
-    // System-assigned Managed Identity – used to call Microsoft Graph without stored secrets
+    // System-assigned Managed Identity – used to call Microsoft Graph and Table
+    // Storage without stored secrets
     type: 'SystemAssigned'
   }
   properties: {
@@ -58,7 +62,9 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
       minTlsVersion: '1.2'
       cors: {
         allowedOrigins: allowedOrigins
-        supportCredentials: true
+        // The API authenticates with a Bearer header only – it never relies on
+        // cookies, so credentialed cross-origin requests are not needed.
+        supportCredentials: false
       }
       appSettings: [
         // ── Azure Functions runtime ─────────────────────────────────────────
@@ -104,13 +110,27 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           value: tenantId
         }
         {
-          // Used by lib/auth.js for local JWT verification (jwks-rsa audience check)
+          // Used by lib/auth.js for JWT verification (audience + issuer check)
           name: 'AUTH_CLIENT_ID'
           value: authClientId
         }
         {
-          name: 'AUDIT_STORAGE_CONNECTION_STRING'
-          value: storageConnectionString
+          // Declares that Easy Auth (authsettingsV2 below) sits in front of this
+          // app and therefore strips any client-supplied X-MS-CLIENT-PRINCIPAL
+          // header. lib/auth.js refuses to trust that unsigned header unless
+          // this is 'true'. Never set it on a deployment without Easy Auth.
+          name: 'EASY_AUTH_ENABLED'
+          value: 'true'
+        }
+        {
+          // OAuth2 scope the caller's token must carry
+          name: 'REQUIRED_SCOPE'
+          value: 'access_as_user'
+        }
+        {
+          // Audit log authenticates with the Managed Identity – no account key
+          name: 'AUDIT_STORAGE_ACCOUNT_NAME'
+          value: storageAccountName
         }
         {
           name: 'AUDIT_TABLE_NAME'
@@ -125,6 +145,13 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           value: '10'
         }
         {
+          // Server-side cap. Without it an oversized justification exceeds the
+          // Azure Table entity limit, the audit write fails, and the caller
+          // still gets the password.
+          name: 'JUSTIFICATION_MAX_LENGTH'
+          value: '500'
+        }
+        {
           name: 'PASSWORD_DISPLAY_SECONDS'
           value: '60'
         }
@@ -136,6 +163,8 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
 // ── Easy Auth (Entra ID built-in authentication) ──────────────────────────────
 // Validates JWT tokens before requests reach the function code.
 // Unauthenticated requests return HTTP 401 without reaching any function code.
+// lib/auth.js re-verifies the forwarded Bearer token independently – this is
+// defence in depth, not the only check.
 
 resource authSettings 'Microsoft.Web/sites/config@2023-01-01' = {
   parent: functionApp
@@ -153,9 +182,10 @@ resource authSettings 'Microsoft.Web/sites/config@2023-01-01' = {
           openIdIssuer: 'https://sts.windows.net/${tenantId}/v2.0'
         }
         validation: {
+          // Only the API audience. The bare client ID is the audience of ID
+          // tokens, which must not be accepted as bearer credentials here.
           allowedAudiences: [
             'api://${authClientId}'
-            authClientId
           ]
         }
       }

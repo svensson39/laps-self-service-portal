@@ -117,7 +117,7 @@ The script asks for confirmation, then handles everything end-to-end (~10 minute
 |------|--------|
 | 1️⃣ | Creates (or reuses) the Entra ID App Registration, sets the identifier URI |
 | 2️⃣ | Deploys all Azure infrastructure via Bicep (single pass) |
-| 3️⃣ | Assigns `Device.Read.All`, `DeviceLocalCredential.Read.All`, `Directory.Read.All` to the Managed Identity |
+| 3️⃣ | Assigns `Device.Read.All` and `DeviceLocalCredential.Read.All` to the Managed Identity (least privilege – `Directory.Read.All` is deliberately not requested) |
 | 4️⃣ | Deploys the backend (Azure Functions) |
 | 5️⃣ | Generates `frontend/authConfig.js` from deployment outputs |
 | 6️⃣ | Deploys the frontend (Azure Static Web App) |

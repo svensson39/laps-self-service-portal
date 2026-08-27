@@ -402,9 +402,11 @@ assign_graph_role() {
   print_success "$role_name  (assigned)"
 }
 
+# Least privilege: these two roles cover every Graph call the backend makes.
+# Directory.Read.All is deliberately not assigned - it would grant tenant-wide
+# read access to the entire directory for no functional gain.
 assign_graph_role "Device.Read.All"
 assign_graph_role "DeviceLocalCredential.Read.All"
-assign_graph_role "Directory.Read.All"
 
 # ── Step 5: Backend deployment ────────────────────────────────────────────────
 
@@ -435,7 +437,6 @@ if [[ "$SKIP_BACKEND" == false ]]; then
 
   CONTAINER="func-deployments"
   BLOB_NAME="${FUNC_APP_NAME}-$(date +%Y%m%d%H%M%S).zip"
-  EXPIRY="$(( $(date +%Y) + 2 ))-$(date +%m-%dT%H:%M:%SZ)"
 
   az storage container create \
     --name "$CONTAINER" \
@@ -455,21 +456,18 @@ if [[ "$SKIP_BACKEND" == false ]]; then
   rm -f "$ZIP_FILE"
   print_success "Package uploaded to blob storage"
 
-  SAS_URL=$(az storage blob generate-sas \
-    --account-name "$STORAGE_ACCOUNT" \
-    --account-key "$STORAGE_KEY" \
-    --container-name "$CONTAINER" \
-    --name "$BLOB_NAME" \
-    --permissions r \
-    --expiry "$EXPIRY" \
-    --full-uri \
-    -o tsv)
+  # The Function App reads the package with its Managed Identity (Storage Blob
+  # Data Reader, granted by infra/modules/roleAssignments.bicep). The previous
+  # approach put a two-year account-key SAS in app settings, which could only be
+  # revoked by rotating the storage account key.
+  BLOB_URL="https://${STORAGE_ACCOUNT}.blob.core.windows.net/${CONTAINER}/${BLOB_NAME}"
 
-  echo "  Configuring Function App (WEBSITE_RUN_FROM_PACKAGE)..."
+  echo "  Configuring Function App (WEBSITE_RUN_FROM_PACKAGE via Managed Identity)..."
   az functionapp config appsettings set \
     --name "$FUNC_APP_NAME" \
     --resource-group "$RESOURCE_GROUP" \
-    --settings "WEBSITE_RUN_FROM_PACKAGE=$SAS_URL" \
+    --settings "WEBSITE_RUN_FROM_PACKAGE=$BLOB_URL" \
+               "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned" \
     --output none
   print_success "Backend deployed to $FUNC_APP_NAME – Function App will restart automatically"
 else

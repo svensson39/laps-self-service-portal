@@ -114,12 +114,29 @@ In local development they come from `backend/local.settings.json` (gitignored).
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | `monitoring.outputs.connectionString` | Application Insights telemetry |
 | `ApplicationInsightsAgent_EXTENSION_VERSION` | `~3` (fixed) | AI agent version |
 | `TENANT_ID` | `subscription().tenantId` | Entra ID Tenant ID for local JWT validation |
-| `AUTH_CLIENT_ID` | `authClientId` Bicep param | App Registration client ID for JWT audience check |
-| `AUDIT_STORAGE_CONNECTION_STRING` | `storage.outputs.storageConnectionString` | Table Storage for audit log |
+| `AUTH_CLIENT_ID` | `authClientId` Bicep param | App Registration client ID for JWT audience check (`api://<clientId>`) |
+| `REQUIRED_SCOPE` | `access_as_user` | Scope the caller's token must carry |
+| `EASY_AUTH_ENABLED` | `true` (set by Bicep) | Declares that Easy Auth fronts the app. Only then is the unsigned `X-MS-CLIENT-PRINCIPAL` header trusted. Leave unset/false anywhere Easy Auth is not enabled. |
+| `AUDIT_STORAGE_ACCOUNT_NAME` | `storage.outputs.storageAccountName` | Audit table account - authenticated with the Managed Identity, no account key |
+| `AUDIT_STORAGE_CONNECTION_STRING` | *(local dev only)* | Azurite connection string. Not set in Azure. |
 | `AUDIT_TABLE_NAME` | `storage.outputs.auditTableName` | Name of the audit log table |
 | `GRAPH_API_ENDPOINT` | `https://graph.microsoft.com` (fixed) | Microsoft Graph base URL |
 | `JUSTIFICATION_MIN_LENGTH` | `10` (default) | Minimum justification length (characters) |
+| `JUSTIFICATION_MAX_LENGTH` | `500` (default) | Maximum justification length. Enforced server-side so an oversized value cannot break the audit write while the password is still released. |
 | `PASSWORD_DISPLAY_SECONDS` | `60` (default) | Seconds to display the password |
+
+### Frontend security headers (`frontend/staticwebapp.config.json`)
+
+The Static Web App serves a Content-Security-Policy. Two entries are deployment-specific:
+
+| Directive | Default | Change it when |
+|-----------|---------|----------------|
+| `connect-src` | `'self' https://login.microsoftonline.com https://*.azurewebsites.net` | The Function App is behind a custom domain or Front Door - add that origin, and drop the wildcard |
+| `img-src` | `'self' data: https://headsinthecloud.blog` | You replace the footer/logo images with your own host |
+
+The policy has no `'unsafe-inline'` in `script-src`, which is why all page logic lives in
+`frontend/js/app.js` rather than in an inline `<script>` block. Keep it that way: adding an
+inline script or an `onclick=` attribute will be blocked by the browser.
 
 ### How the backend reads configuration
 
@@ -132,11 +149,13 @@ const CLIENT_ID = process.env.AUTH_CLIENT_ID;
 const GRAPH_ENDPOINT = process.env.GRAPH_API_ENDPOINT ?? 'https://graph.microsoft.com';
 
 // lib/audit.js
-const CONNECTION_STRING = process.env.AUDIT_STORAGE_CONNECTION_STRING;
+const ACCOUNT_NAME      = process.env.AUDIT_STORAGE_ACCOUNT_NAME;      // Managed Identity (Azure)
+const CONNECTION_STRING = process.env.AUDIT_STORAGE_CONNECTION_STRING; // Azurite (local only)
 const TABLE_NAME        = process.env.AUDIT_TABLE_NAME ?? 'LapsAuditLog';
 
 // functions/lapsPassword.js
 const MIN_JUSTIFICATION = parseInt(process.env.JUSTIFICATION_MIN_LENGTH ?? '10', 10);
+const MAX_JUSTIFICATION = parseInt(process.env.JUSTIFICATION_MAX_LENGTH ?? '500', 10);
 ```
 
 ### Local development (`backend/local.settings.json`)
@@ -150,10 +169,13 @@ const MIN_JUSTIFICATION = parseInt(process.env.JUSTIFICATION_MIN_LENGTH ?? '10',
     "FUNCTIONS_WORKER_RUNTIME": "node",
     "TENANT_ID": "<your-tenant-id>",
     "AUTH_CLIENT_ID": "<your-client-id>",
+    "REQUIRED_SCOPE": "access_as_user",
+    "EASY_AUTH_ENABLED": "false",
     "AUDIT_STORAGE_CONNECTION_STRING": "UseDevelopmentStorage=true",
     "AUDIT_TABLE_NAME": "LapsAuditLog",
     "GRAPH_API_ENDPOINT": "https://graph.microsoft.com",
     "JUSTIFICATION_MIN_LENGTH": "10",
+    "JUSTIFICATION_MAX_LENGTH": "500",
     "PASSWORD_DISPLAY_SECONDS": "60"
   }
 }
@@ -196,7 +218,7 @@ MI_ID="<managedIdentityPrincipalId from Bicep output>"
 GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"
 GRAPH_SP_ID=$(az ad sp show --id "$GRAPH_APP_ID" --query id -o tsv)
 
-for ROLE in "Device.Read.All" "DeviceLocalCredential.Read.All" "Directory.Read.All"; do
+for ROLE in "Device.Read.All" "DeviceLocalCredential.Read.All"; do
   ROLE_ID=$(az ad sp show --id "$GRAPH_APP_ID" \
     --query "appRoles[?value=='$ROLE'].id | [0]" -o tsv)
 
@@ -275,7 +297,7 @@ Bicep deployment
     │
     ├─► Storage Account created
     │       └─► connectionString ─────────────────► Function App: AzureWebJobsStorage
-    │                                                               AUDIT_STORAGE_CONNECTION_STRING
+    │       └─► name ─────────────────────────────► Function App: AUDIT_STORAGE_ACCOUNT_NAME
     │
     ├─► Application Insights created
     │       └─► connectionString ─────────────────► Function App: APPLICATIONINSIGHTS_CONNECTION_STRING

@@ -5,11 +5,12 @@
     "exclude": ["/css/*", "/js/*", "/assets/*"]
   },
   "globalHeaders": {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://headsinthecloud.blog; connect-src 'self' https://login.microsoftonline.com https://*.azurewebsites.net; font-src 'self'; frame-src https://login.microsoftonline.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://login.microsoftonline.com",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "X-XSS-Protection": "1; mode=block",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "geolocation=(), camera=(), microphone=()",
+    "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
     "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
     "Cache-Control": "no-store"
   },

@@ -9,15 +9,20 @@
 
     "TENANT_ID": "<your-entra-tenant-id>",
     "AUTH_CLIENT_ID": "<app-registration-client-id>",
+    "REQUIRED_SCOPE": "access_as_user",
 
+    "_comment_easyauth": "Only set EASY_AUTH_ENABLED=true where App Service Easy Auth actually fronts the app and strips client-supplied X-MS-CLIENT-PRINCIPAL headers. Locally it must stay false so tokens are verified against JWKS instead.",
+    "EASY_AUTH_ENABLED": "false",
+
+    "_comment_audit": "In Azure the audit log uses AUDIT_STORAGE_ACCOUNT_NAME + Managed Identity. The connection string below is for Azurite during local development only.",
     "AUDIT_STORAGE_CONNECTION_STRING": "UseDevelopmentStorage=true",
     "AUDIT_TABLE_NAME": "LapsAuditLog",
     "GRAPH_API_ENDPOINT": "https://graph.microsoft.com",
     "JUSTIFICATION_MIN_LENGTH": "10",
+    "JUSTIFICATION_MAX_LENGTH": "500",
     "PASSWORD_DISPLAY_SECONDS": "60"
   },
   "Host": {
-    "CORS": "http://localhost:4280",
-    "CORSCredentials": true
+    "CORS": "http://localhost:4280"
   }
 }

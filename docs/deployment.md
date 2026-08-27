@@ -76,7 +76,7 @@ The script executes these steps in order:
 | 2 | Verify Azure CLI login (`az login` if needed), confirm subscription |
 | 3 | Create Entra ID App Registration via `az ad app` (or reuse existing), set identifier URI `api://<clientId>` |
 | 4 | Deploy Bicep infrastructure (single pass, all parameters known upfront) |
-| 5 | Assign `Device.Read.All`, `DeviceLocalCredential.Read.All`, `Directory.Read.All` to the Function App's Managed Identity |
+| 5 | Assign `Device.Read.All` and `DeviceLocalCredential.Read.All` to the Function App's Managed Identity |
 | 6 | Deploy backend via zip-to-blob + `WEBSITE_RUN_FROM_PACKAGE` |
 | 7 | Generate `frontend/authConfig.js` from deployment outputs |
 | 8 | Deploy frontend (`swa deploy`) |
@@ -186,7 +186,6 @@ assign_role() {
 
 assign_role "Device.Read.All"
 assign_role "DeviceLocalCredential.Read.All"
-assign_role "Directory.Read.All"
 ```
 
 ### 4️⃣ Step 4 – Deploy the backend
@@ -217,23 +216,20 @@ az storage blob upload \
   --file /tmp/laps-backend.zip \
   --overwrite
 
-SAS=$(az storage blob generate-sas \
-  --connection-string "$CONNSTR" \
-  --container-name func-deployments \
-  --name backend.zip \
-  --permissions r \
-  --expiry "$(date -u -d '+2 hours' '+%Y-%m-%dT%H:%MZ' 2>/dev/null || date -u -v+2H '+%Y-%m-%dT%H:%MZ')" \
-  --full-uri \
-  --output tsv)
+# No SAS token: the Function App reads the package with its Managed Identity,
+# which holds Storage Blob Data Reader on the account (granted by
+# infra/modules/roleAssignments.bicep).
+BLOB_URL="https://${STORAGE}.blob.core.windows.net/func-deployments/backend.zip"
 
 az functionapp config appsettings set \
   --name "$FUNC_NAME" \
   --resource-group "$RG" \
-  --settings "WEBSITE_RUN_FROM_PACKAGE=$SAS"
+  --settings "WEBSITE_RUN_FROM_PACKAGE=$BLOB_URL" \
+             "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID=SystemAssigned"
 ```
 
-> **Note (Windows PowerShell):** The automated script (`deploy.ps1`) handles this 
-> step automatically, including the SAS URL quoting workaround.
+> **Note (Windows PowerShell):** The automated script (`deploy.ps1`) handles this
+> step automatically.
 
 ### 5️⃣ Step 5 – Generate authConfig.js and deploy the frontend
 
