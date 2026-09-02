@@ -30,4 +30,9 @@ window.LAPS_CONFIG = {
   passwordTimeout:        60,   // seconds the password stays visible
   justificationMinLength: 10,   // minimum characters in the justification field
 
+  // Session limits (frontend UX layer; the backend enforces the absolute cap
+  // server-side via the auth_time claim – SESSION_MAX_AGE_MINUTES app setting)
+  sessionMaxAgeMinutes:  480,   // absolute session cap, 0 = unlimited
+  sessionIdleMinutes:     30,   // idle logout, 0 = disabled
+
 };

@@ -31,7 +31,7 @@ const GRAPH_ENDPOINT = process.env.GRAPH_API_ENDPOINT ?? 'https://graph.microsof
 let _credential = null;
 
 function getCredential() {
-  if (!_credential) _credential = new DefaultAzureCredential();
+  if (!_credential) {_credential = new DefaultAzureCredential();}
   return _credential;
 }
 

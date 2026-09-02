@@ -35,7 +35,7 @@ let _initialized = false;
  * No-op if APPLICATIONINSIGHTS_CONNECTION_STRING is not set (local dev without AI).
  */
 function initialize() {
-  if (_initialized) return;
+  if (_initialized) {return;}
   const connectionString = process.env.APPLICATIONINSIGHTS_CONNECTION_STRING;
   if (!connectionString) {
     console.warn('[telemetry] APPLICATIONINSIGHTS_CONNECTION_STRING not set – custom events disabled.');
@@ -79,7 +79,7 @@ function getClient() {
  */
 function trackPasswordAccess({ oid, upn, deviceId, deviceName, success, failReason }) {
   const client = getClient();
-  if (!client) return;
+  if (!client) {return;}
 
   client.trackEvent({
     name: 'LapsPasswordAccess',
@@ -105,7 +105,7 @@ function trackPasswordAccess({ oid, upn, deviceId, deviceName, success, failReas
  */
 function trackDeviceListAccess({ oid, upn, deviceCount }) {
   const client = getClient();
-  if (!client) return;
+  if (!client) {return;}
 
   client.trackEvent({
     name: 'LapsDeviceListAccess',

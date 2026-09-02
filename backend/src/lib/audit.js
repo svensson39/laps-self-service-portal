@@ -43,7 +43,7 @@ const MAX_FIELD_LENGTH = 512;
 let _client = null;
 
 function getTableClient() {
-  if (_client) return _client;
+  if (_client) {return _client;}
 
   if (ACCOUNT_NAME) {
     _client = new TableClient(

@@ -31,6 +31,12 @@ const TENANT_ID      = process.env.TENANT_ID;
 const CLIENT_ID      = process.env.AUTH_CLIENT_ID;
 const REQUIRED_SCOPE = process.env.REQUIRED_SCOPE ?? 'access_as_user';
 
+// Maximum age of the *interactive sign-in* (Entra auth_time claim), not the
+// token. MSAL silently renews access tokens, so token iat/exp never reflect
+// how long the user has been on the page – auth_time does.
+// 0 = disabled (no session age limit).
+const SESSION_MAX_AGE_MINUTES = parseInt(process.env.SESSION_MAX_AGE_MINUTES ?? '480', 10);
+
 // Easy Auth's unsigned principal header is only honoured when the deployment
 // explicitly confirms that Easy Auth is in front of this app.
 const EASY_AUTH_ENABLED = String(process.env.EASY_AUTH_ENABLED ?? '').toLowerCase() === 'true';
@@ -40,6 +46,7 @@ const CLAIM_OID    = 'http://schemas.microsoft.com/identity/claims/objectidentif
 const CLAIM_TID    = 'http://schemas.microsoft.com/identity/claims/tenantid';
 const CLAIM_SCOPE  = 'http://schemas.microsoft.com/identity/claims/scope';
 const CLAIM_UPN    = 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn';
+const CLAIM_AUTH_TIME = 'http://schemas.microsoft.com/identity/claims/auth_time';
 
 // JWKS client – caches public keys for 10 minutes to avoid repeated HTTP calls
 const jwksClient = jwksRsa({
@@ -124,7 +131,7 @@ function decodeEasyAuthPrincipal(headerValue, opts = {}) {
   const getClaim = (...types) => {
     for (const type of types) {
       const match = claims.find(c => c.typ === type);
-      if (match?.val) return match.val;
+      if (match?.val) {return match.val;}
     }
     return null;
   };
@@ -132,7 +139,7 @@ function decodeEasyAuthPrincipal(headerValue, opts = {}) {
   const oid = getClaim(CLAIM_OID, 'oid');
   const upn = getClaim(CLAIM_UPN, 'upn', 'preferred_username');
 
-  if (!oid) throw new AuthError(401, 'Authentication failed.', 'OID claim missing from principal.');
+  if (!oid) {throw new AuthError(401, 'Authentication failed.', 'OID claim missing from principal.');}
 
   if (opts.validateClaims) {
     const tid = getClaim(CLAIM_TID, 'tid');
@@ -146,6 +153,25 @@ function decodeEasyAuthPrincipal(headerValue, opts = {}) {
     if (scope && !hasRequiredScope(scope)) {
       throw new AuthError(403, 'Insufficient scope.',
         `Scope claim "${scope}" does not include "${REQUIRED_SCOPE}".`);
+    }
+
+    // Session age limit for the Easy Auth path. Fail closed: if the platform
+    // did not surface auth_time we cannot measure session age, so the request
+    // is rejected rather than silently bypassing the limit.
+    if (SESSION_MAX_AGE_MINUTES > 0) {
+      const authTimeRaw = getClaim(CLAIM_AUTH_TIME, 'auth_time');
+      const authTime    = authTimeRaw ? Math.floor(Number(authTimeRaw)) : NaN;
+
+      if (!Number.isFinite(authTime) || authTime <= 0) {
+        throw new AuthError(401, 'Session expired. Please sign in again.',
+          'Easy Auth principal has no usable auth_time claim while SESSION_MAX_AGE_MINUTES is active.');
+      }
+
+      const sessionAgeMinutes = (Math.floor(Date.now() / 1000) - authTime) / 60;
+      if (sessionAgeMinutes > SESSION_MAX_AGE_MINUTES) {
+        throw new AuthError(401, 'Session expired. Please sign in again.',
+          `Session age ${Math.round(sessionAgeMinutes)} min exceeds SESSION_MAX_AGE_MINUTES (${SESSION_MAX_AGE_MINUTES}).`);
+      }
     }
   }
 
@@ -219,7 +245,28 @@ async function verifyBearerToken(token) {
   const oid = payload.oid;
   const upn = payload.preferred_username ?? payload.upn ?? '';
 
-  if (!oid) throw new AuthError(401, 'Authentication failed.', 'OID claim missing from token.');
+  if (!oid) {throw new AuthError(401, 'Authentication failed.', 'OID claim missing from token.');}
+
+  // ── Session age limit ──────────────────────────────────────────────────────
+  // Entra issues auth_time on interactive sign-ins; silent token renewals
+  // carry the ORIGINAL auth_time forward, so this measures true session age.
+  if (SESSION_MAX_AGE_MINUTES > 0) {
+    if (!payload.auth_time || typeof payload.auth_time !== 'number') {
+      throw new AuthError(401, 'Session expired. Please sign in again.',
+        'Token has no numeric auth_time claim – cannot verify session age.');
+    }
+
+    const sessionAgeMinutes = (Math.floor(Date.now() / 1000) - payload.auth_time) / 60;
+
+    if (sessionAgeMinutes > SESSION_MAX_AGE_MINUTES) {
+      throw new AuthError(401, 'Session expired. Please sign in again.',
+        `Session age ${Math.round(sessionAgeMinutes)} min exceeds SESSION_MAX_AGE_MINUTES (${SESSION_MAX_AGE_MINUTES}).`);
+    }
+
+    // A small negative drift (clock skew) is tolerated by comparing only the
+    // upper bound; anything wildly negative would indicate a forged token,
+    // which the signature verification above has already ruled out.
+  }
 
   return { oid, upn };
 }
