@@ -35,7 +35,7 @@ const REQUIRED_SCOPE = process.env.REQUIRED_SCOPE ?? 'access_as_user';
 // token. MSAL silently renews access tokens, so token iat/exp never reflect
 // how long the user has been on the page – auth_time does.
 // 0 = disabled (no session age limit).
-const SESSION_MAX_AGE_MINUTES = parseInt(process.env.SESSION_MAX_AGE_MINUTES ?? '480', 10);
+const SESSION_MAX_AGE_MINUTES = parseInt(process.env.SESSION_MAX_AGE_MINUTES ?? '60', 10);
 
 // Easy Auth's unsigned principal header is only honoured when the deployment
 // explicitly confirms that Easy Auth is in front of this app.

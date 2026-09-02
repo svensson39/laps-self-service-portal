@@ -44,8 +44,8 @@
     passwordTimeout:       60,
     justificationMinLength: 10,
     // Session limits (server enforces the absolute cap via auth_time as well)
-    sessionMaxAgeMinutes:  480,   // 0 = unlimited absolute session length
-    sessionIdleMinutes:    30,    // 0 = no idle logout
+    sessionMaxAgeMinutes:   60,   // absolute session cap, 0 = unlimited
+    sessionIdleMinutes:     30,   // 0 = no idle logout
   }, window.LAPS_CONFIG ?? {});
 
   const MSAL_CONFIG = {

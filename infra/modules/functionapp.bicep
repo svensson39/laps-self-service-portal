@@ -160,7 +160,7 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           // MSAL silent renewals keep the original auth_time, so this caps the
           // real session length, not the token lifetime. 0 = disabled.
           name: 'SESSION_MAX_AGE_MINUTES'
-          value: '480'
+          value: '60'
         }
       ]
     }
