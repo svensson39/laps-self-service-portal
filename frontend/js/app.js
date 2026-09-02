@@ -43,6 +43,9 @@
     apiScope:              '',
     passwordTimeout:       60,
     justificationMinLength: 10,
+    // Session limits (server enforces the absolute cap via auth_time as well)
+    sessionMaxAgeMinutes:   60,   // absolute session cap, 0 = unlimited
+    sessionIdleMinutes:     30,   // 0 = no idle logout
   }, window.LAPS_CONFIG ?? {});
 
   const MSAL_CONFIG = {
@@ -137,11 +140,6 @@
     });
   }
 
-  async function logout() {
-    const account = msal.getActiveAccount();
-    await msal.logoutRedirect({ account, postLogoutRedirectUri: window.location.origin });
-  }
-
   async function getToken() {
     const account = msal.getActiveAccount();
     if (!account) throw new Error('No authenticated account.');
@@ -186,6 +184,12 @@
     try {
       data = await apiFetch('/api/my-devices');
     } catch (err) {
+      // Session expired server-side (auth_time limit or revoked token): the
+      // cached MSAL account is stale, so sign out cleanly instead of retrying.
+      if (err.status === 401) {
+        doLogout();
+        return;
+      }
       showGlobalError(
         'Failed to load devices',
         err.message ?? 'Could not connect to the backend. Please try again.',
@@ -285,6 +289,11 @@
         body:   JSON.stringify({ deviceId: activeDevice.id, justification }),
       });
     } catch (err) {
+      // Server-side session expiry mid-flow: sign out cleanly.
+      if (err.status === 401) {
+        doLogout();
+        return;
+      }
       const msg = err.status === 403 ? 'This device is not registered to your account.'
                 : err.status === 404 ? 'No LAPS password is stored for this device in Intune.'
                 : err.message ?? 'An unexpected error occurred.';
@@ -300,7 +309,7 @@
   }
 
   // ── Password display ───────────────────────────────────────────────────────
-  function displayPassword({ deviceName, accountName, password, passwordCreated, nextRotation }) {
+  function displayPassword({ deviceName, accountName, password, passwordCreated, nextRotation, passwordExpires }) {
     document.getElementById('pw-device-name').textContent  = `Device: ${deviceName}`;
     document.getElementById('pw-account-name').textContent = accountName ? `Account: ${accountName}` : '';
     document.getElementById('pw-input').value             = password;
@@ -311,6 +320,8 @@
       `Password created: ${passwordCreated ? fmtDate(passwordCreated) : 'Unknown'}`;
     document.getElementById('pw-next-rotation').textContent =
       `Next rotation: ${nextRotation ? fmtDate(nextRotation) : 'Unknown'}`;
+    document.getElementById('pw-expires').textContent =
+      `Password expires: ${passwordExpires ? fmtDate(passwordExpires) : 'Unknown'}`;
 
     switchModalPhase('password');
     startCountdown(C.passwordTimeout);
@@ -416,7 +427,7 @@
   document.getElementById('btn-login').addEventListener('click', login);
 
   // Logout
-  document.getElementById('btn-logout').addEventListener('click', logout);
+  document.getElementById('btn-logout').addEventListener('click', doLogout);
 
   // Theme toggles
   document.querySelectorAll('.theme-toggle').forEach(btn => {
@@ -475,6 +486,57 @@
   });
 
   // ── Boot ───────────────────────────────────────────────────────────────────
+  // Session timer state (set after a successful sign-in)
+  let sessionLogoutTimer  = null;   // absolute session cap (from sign-in time)
+  let idleLogoutTimer     = null;   // idle timeout (reset on user activity)
+  let sessionStartTime    = null;   // epoch ms of first successful boot
+
+  /**
+   * Sign the user out via MSAL redirect. Clears the cached MSAL session, so a
+   * reload lands on the login view instead of silently reacquiring tokens.
+   */
+  function doLogout() {
+    stopSessionTimers();
+    const account = msal.getActiveAccount();
+    msal.logoutRedirect({ account, postLogoutRedirectUri: window.location.origin })
+      .catch(() => { window.location.reload(); });
+  }
+
+  function stopSessionTimers() {
+    if (sessionLogoutTimer) { clearTimeout(sessionLogoutTimer); sessionLogoutTimer = null; }
+    if (idleLogoutTimer)    { clearTimeout(idleLogoutTimer);    idleLogoutTimer = null; }
+  }
+
+  function scheduleIdleLogout() {
+    if (idleLogoutTimer) clearTimeout(idleLogoutTimer);
+    if (!C.sessionIdleMinutes || C.sessionIdleMinutes <= 0) return;
+    idleLogoutTimer = setTimeout(() => {
+      stopSessionTimers();
+      showGlobalError('Session expired', 'You were signed out after a period of inactivity.');
+    }, C.sessionIdleMinutes * 60 * 1000);
+  }
+
+  /** Arm the absolute session cap once per sign-in (not reset by activity). */
+  function scheduleAbsoluteLogout() {
+    if (sessionLogoutTimer) return;
+    if (!C.sessionMaxAgeMinutes || C.sessionMaxAgeMinutes <= 0) return;
+    const elapsed = sessionStartTime ? (Date.now() - sessionStartTime) : 0;
+    const remaining = Math.max(0, C.sessionMaxAgeMinutes * 60 * 1000 - elapsed);
+    sessionLogoutTimer = setTimeout(() => {
+      stopSessionTimers();
+      showGlobalError('Session expired', 'Your session has reached its maximum duration. Please sign in again.');
+    }, remaining);
+  }
+
+  // User activity resets the idle timer. Passive listeners – no scrolling cost.
+  const ACTIVITY_EVENTS = ['click', 'keydown', 'pointerdown', 'scroll', 'touchstart'];
+  ACTIVITY_EVENTS.forEach(evt =>
+    document.addEventListener(evt, () => {
+      if (sessionStartTime === null) return;   // not signed in yet
+      scheduleIdleLogout();
+    }, { passive: true }));
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
   function boot() {
     setLoading('Signing in…');
 
@@ -489,6 +551,12 @@
         }
 
         if (!msal.getActiveAccount()) msal.setActiveAccount(accounts[0]);
+
+        // ── Session limits: arm on first authenticated boot ────────────────
+        if (sessionStartTime === null) sessionStartTime = Date.now();
+        scheduleAbsoluteLogout();
+        scheduleIdleLogout();
+
         loadDevices();
       })
       .catch(err => {

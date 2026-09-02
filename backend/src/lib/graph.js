@@ -31,7 +31,7 @@ const GRAPH_ENDPOINT = process.env.GRAPH_API_ENDPOINT ?? 'https://graph.microsof
 let _credential = null;
 
 function getCredential() {
-  if (!_credential) _credential = new DefaultAzureCredential();
+  if (!_credential) {_credential = new DefaultAzureCredential();}
   return _credential;
 }
 
@@ -159,7 +159,7 @@ async function getLapsPassword(deviceId, expectedDeviceName) {
   const authHeader = { Authorization: `Bearer ${tokenResponse.token}` };
 
   const url = `${GRAPH_ENDPOINT}/v1.0/directory/deviceLocalCredentials/${encodeURIComponent(deviceId)}`
-            + '?$select=credentials,deviceName,refreshDateTime';
+            + '?$select=credentials,deviceName,refreshDateTime,expirationDateTime';
   const res = await fetch(url, { headers: authHeader });
 
   let result;
@@ -210,6 +210,7 @@ async function getLapsPassword(deviceId, expectedDeviceName) {
     password,
     passwordCreated: credential.backupDateTime ?? null,
     nextRotation:    result.refreshDateTime ?? null,
+    passwordExpires: result.expirationDateTime ?? credential.expirationDateTime ?? null,
   };
 }
 

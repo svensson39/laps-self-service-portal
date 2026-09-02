@@ -30,6 +30,9 @@ module.exports = [
         clearTimeout: 'readonly',
         setInterval:  'readonly',
         clearInterval:'readonly',
+        fetch:        'readonly',   // Native fetch (Node >= 18) – used by lib/graph.js
+        URL:          'readonly',
+        URLSearchParams: 'readonly',
       },
     },
     rules: {

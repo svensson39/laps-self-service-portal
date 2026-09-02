@@ -155,6 +155,13 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
           name: 'PASSWORD_DISPLAY_SECONDS'
           value: '60'
         }
+        {
+          // Maximum age of the interactive sign-in (Entra auth_time claim).
+          // MSAL silent renewals keep the original auth_time, so this caps the
+          // real session length, not the token lifetime. 0 = disabled.
+          name: 'SESSION_MAX_AGE_MINUTES'
+          value: '60'
+        }
       ]
     }
   }

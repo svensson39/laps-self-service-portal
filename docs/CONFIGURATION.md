@@ -78,6 +78,8 @@ and MSAL will fail with a descriptive error — no silent misconfiguration.
 |-----|---------|-------------|
 | `passwordTimeout` | `60` | Seconds the LAPS password stays visible before being hidden |
 | `justificationMinLength` | `10` | Minimum characters required in the justification text field |
+| `sessionMaxAgeMinutes` | `60` | Absolute session cap in minutes – 0 = unlimited. The backend enforces the same limit server-side via the `auth_time` claim (`SESSION_MAX_AGE_MINUTES`). |
+| `sessionIdleMinutes` | `30` | Idle logout in minutes – 0 = disabled |
 
 > **Note:** If you change `passwordTimeout` or `justificationMinLength` here,
 > update the matching backend app settings (`PASSWORD_DISPLAY_SECONDS`,
@@ -93,6 +95,8 @@ window.LAPS_CONFIG = {
   apiScope:     'api://a1b2c3d4-e5f6-7890-abcd-ef1234567890/access_as_user',
   passwordTimeout:        60,
   justificationMinLength: 10,
+  sessionMaxAgeMinutes:   60,
+  sessionIdleMinutes:     30,
 };
 ```
 
@@ -124,6 +128,7 @@ In local development they come from `backend/local.settings.json` (gitignored).
 | `JUSTIFICATION_MIN_LENGTH` | `10` (default) | Minimum justification length (characters) |
 | `JUSTIFICATION_MAX_LENGTH` | `500` (default) | Maximum justification length. Enforced server-side so an oversized value cannot break the audit write while the password is still released. |
 | `PASSWORD_DISPLAY_SECONDS` | `60` (default) | Seconds to display the password |
+| `SESSION_MAX_AGE_MINUTES` | `60` (default) | Maximum age of the **interactive sign-in** (Entra `auth_time` claim), not the token. Silent MSAL token renewals keep the original `auth_time`, so this caps the real session length. 0 = disabled. Requests are rejected with 401 when exceeded. |
 
 ### Frontend security headers (`frontend/staticwebapp.config.json`)
 
