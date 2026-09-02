@@ -266,6 +266,7 @@ app.http('laps-password', {
         password:        lapsResult.password,         // plaintext, never logged or stored
         passwordCreated: lapsResult.passwordCreated,  // when this credential was backed up to Entra ID
         nextRotation:    lapsResult.nextRotation,     // when the password will next be rotated
+        passwordExpires: lapsResult.passwordExpires,  // when this credential stops being valid
         auditId,
       },
     };

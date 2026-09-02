@@ -309,7 +309,7 @@
   }
 
   // ── Password display ───────────────────────────────────────────────────────
-  function displayPassword({ deviceName, accountName, password, passwordCreated, nextRotation }) {
+  function displayPassword({ deviceName, accountName, password, passwordCreated, nextRotation, passwordExpires }) {
     document.getElementById('pw-device-name').textContent  = `Device: ${deviceName}`;
     document.getElementById('pw-account-name').textContent = accountName ? `Account: ${accountName}` : '';
     document.getElementById('pw-input').value             = password;
@@ -320,6 +320,8 @@
       `Password created: ${passwordCreated ? fmtDate(passwordCreated) : 'Unknown'}`;
     document.getElementById('pw-next-rotation').textContent =
       `Next rotation: ${nextRotation ? fmtDate(nextRotation) : 'Unknown'}`;
+    document.getElementById('pw-expires').textContent =
+      `Password expires: ${passwordExpires ? fmtDate(passwordExpires) : 'Unknown'}`;
 
     switchModalPhase('password');
     startCountdown(C.passwordTimeout);
